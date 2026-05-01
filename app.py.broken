@@ -8,12 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from config import APP_NAME, COMPANY_NAME, FIELD_LABELS, SUPPORTED_FILE_TYPES
-from modules.excel_filler import fill_excel_template, generate_csv_output
-from modules.solar_calculator import build_solar_summary
+from modules.excel_filler import build_solar_summary, fill_excel_template, generate_csv_output
 from modules.extractor import BillExtractor
 from modules.parser import parse_bill_data
-from modules.pdf_generator import generate_solar_proposal
-from modules.email_sender import create_email_sender
 from modules.utils import (
     append_history,
     clear_history,
@@ -198,7 +195,6 @@ def initialize_session_state() -> None:
         "editable_data": {},
         "latest_output_path": None,
         "latest_csv_output_path": None,
-        "latest_pdf_path": None,
         "latest_summary": None,
         "latest_preview_path": None,
         "latest_json": None,
@@ -579,64 +575,6 @@ def main() -> None:
                     for field, notes in flagged_fields.items()
                 ]
                 st.dataframe(pd.DataFrame(flag_rows), width="stretch", hide_index=True)
-
-        pdf_col_1, pdf_col_2, pdf_col_3 = st.columns([1, 1, 1])
-        with pdf_col_1:
-            generate_pdf = st.button("Generate PDF Proposal", width="stretch")
-        with pdf_col_2:
-            send_email_btn = st.button("Send Email Report", width="stretch")
-        with pdf_col_3:
-            debug_mode = st.checkbox("Debug Mode", value=False, help="Show layout region visualizations")
-
-        if generate_pdf:
-            if not validation["is_valid"]:
-                st.error("Complete the required fields before generating PDF.")
-            else:
-                try:
-                    pdf_output_path = generate_solar_proposal(
-                        bill_data=final_data,
-                        solar_summary=solar_summary,
-                        customer_name=final_data.get("customer_name"),
-                    )
-                    st.session_state.latest_pdf_path = str(pdf_output_path) if pdf_output_path else None
-                    if pdf_output_path:
-                        st.success(f"PDF proposal generated: {pdf_output_path.name}")
-                    else:
-                        st.error("PDF generation failed. Install fpdf2: pip install fpdf2")
-                except Exception as exc:
-                    st.error(f"PDF generation error: {exc}")
-
-        if send_email_btn:
-            email_sender = create_email_sender()
-            if not email_sender.is_configured():
-                st.warning("Email not configured. Set SMTP_USER and SMTP_PASSWORD environment variables.")
-            else:
-                recipient_email = st.text_input("Recipient Email Address", key="recipient_email")
-                if recipient_email:
-                    excel_path = Path(st.session_state.latest_output_path) if st.session_state.latest_output_path else None
-                    pdf_path = Path(st.session_state.latest_pdf_path) if st.session_state.latest_pdf_path else None
-                    result = email_sender.send_solar_report(
-                        to_email=recipient_email,
-                        customer_name=final_data.get("customer_name"),
-                        excel_path=excel_path,
-                        pdf_path=pdf_path,
-                        bill_data=final_data,
-                        solar_summary=solar_summary,
-                    )
-                    if result.get("success"):
-                        st.success(result.get("message"))
-                    else:
-                        st.error(result.get("message"))
-
-        if debug_mode:
-            with st.expander("Debug: Layout Region OCR", expanded=True):
-                region_texts = active_record.get("region_texts", {})
-                provider = active_record.get("provider", "UNKNOWN")
-                st.info(f"Detected Provider: {provider}")
-                for region_name, region_text in region_texts.items():
-                    if region_text.strip():
-                        st.markdown(f"**{region_name}**")
-                        st.code(region_text, language="text")
 
         action_col_1, action_col_2, action_col_3 = st.columns([1, 1, 1])
         with action_col_1:

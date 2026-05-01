@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from difflib import SequenceMatcher
-from typing import Any
-
+from modules.cleaner import clean_customer_name
+from modules.multilingual_labels import LABEL_PATTERNS, MONTH_MAP
 
 FIELD_TYPES = {
     "customer_name": "text",
@@ -32,57 +32,6 @@ FIELD_REGION_PRIORITY = {
     "due_date": ["header_right", "full_text"],
     "current_reading": ["readings_block", "usage_table", "full_text"],
     "previous_reading": ["readings_block", "usage_table", "full_text"],
-}
-
-LABEL_PATTERNS = {
-    "customer_name": [
-        r"(?:consumer\s*name|customer\s*name|name\s*of\s*consumer|ग्राहकाचे\s*नाव)\s*[:\-]?\s*([A-Z][A-Z\s\.]{4,60})",
-    ],
-    "consumer_number": [
-        r"(?:consumer\s*no|consumer\s*number|service\s*no|ग्राहक\s*क्रमांक)\s*[:\-]?\s*([0-9]{10,13})",
-    ],
-    "billing_month": [
-        r"(?:bill\s*of\s*supply\s*for\s*the\s*month\s*of|billing\s*month|bill\s*month|महिना)\s*[:\-]?\s*([A-Za-z0-9\-\/ ]{5,20})",
-    ],
-    "bill_amount": [
-        r"(?:bill\s*amount|amount\s*payable|current\s*bill\s*amount|देयक\s*रक्कम)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([0-9,]+(?:\.\d{1,2})?)",
-    ],
-    "units_consumed": [
-        r"(?:units\s*consumed|total\s*units|energy\s*consumed|एकूण\s*वापर)\s*[:\-]?\s*([0-9,]+(?:\.\d{1,2})?)",
-    ],
-    "connected_load_kw": [
-        r"(?:connected\s*load|sanctioned\s*load|मंजूर\s*भार)\s*[:\-]?\s*([0-9,]+(?:\.\d{1,2})?)\s*(?:kw|kva)?",
-    ],
-    "tariff_category": [
-        r"(?:tariff\s*category|tariff|category|दर\s*प्रकार)\s*[:\-]?\s*([A-Za-z0-9\-\s\/]{3,40})",
-    ],
-    "meter_number": [
-        r"(?:meter\s*no|meter\s*number|मीटर\s*क्रमांक)\s*[:\-]?\s*([A-Za-z0-9\-]{8,16})",
-    ],
-    "due_date": [
-        r"(?:due\s*date|payment\s*due\s*date|देय\s*दिनांक)\s*[:\-]?\s*(\d{2}[/-]\d{2}[/-]\d{4})",
-    ],
-    "current_reading": [
-        r"(?:current\s*reading|present\s*reading|चालू\s*रिडिंग)\s*[:\-]?\s*([0-9,]+(?:\.\d{1,2})?)",
-    ],
-    "previous_reading": [
-        r"(?:previous\s*reading|past\s*reading|मागील\s*रिडिंग)\s*[:\-]?\s*([0-9,]+(?:\.\d{1,2})?)",
-    ],
-}
-
-MONTH_MAP = {
-    "jan": "JAN",
-    "feb": "FEB",
-    "mar": "MAR",
-    "apr": "APR",
-    "may": "MAY",
-    "jun": "JUN",
-    "jul": "JUL",
-    "aug": "AUG",
-    "sep": "SEP",
-    "oct": "OCT",
-    "nov": "NOV",
-    "dec": "DEC",
 }
 
 PHONE_BLACKLIST = {"7798577985", "77985", "9112233120"}
@@ -177,7 +126,7 @@ def build_search_space(raw_text: str, region_texts: dict[str, str] | None = None
 
 def extract_with_patterns(text: str, patterns: list[str], field: str) -> tuple[Any, str | None]:
     transformers = {
-        "customer_name": clean_text,
+        "customer_name": lambda x: clean_customer_name(clean_text(x)) or clean_text(x),
         "consumer_number": clean_text,
         "billing_month": clean_text,
         "bill_amount": clean_currency,
@@ -238,13 +187,13 @@ def _valid_bill_year(year_str: str) -> bool:
 
 def infer_billing_month(text: str) -> str | None:
     # Pattern: MON-YYYY or MON/YYYY where year is realistic
-    for token in re.findall(r"\b[A-Za-z]{3,9}[-/ ]20\d{2}\b", text):
+    for token in re.findall(r"\b\w{3,12}[-/ ]20\d{2}\b", text):
         year_match = re.search(r"(20\d{2})", token)
         month = fuzzy_month(token)
         if month and year_match and _valid_bill_year(year_match.group(1)):
             return f"{month}-{year_match.group(1)}"
 
-    month_of_match = re.search(r"month\s*of\s*([A-Za-z]{3,12})", text, flags=re.IGNORECASE)
+    month_of_match = re.search(r"month\s*of\s*(\w{3,12})", text, flags=re.IGNORECASE)
     # Find the FIRST plausible year in text (not a random 4-digit number)
     year_candidates = [y for y in re.findall(r"\b(20\d{2})\b", text) if _valid_bill_year(y)]
     if month_of_match and year_candidates:
@@ -252,7 +201,7 @@ def infer_billing_month(text: str) -> str | None:
         if month:
             return f"{month}-{year_candidates[0]}"
 
-    for token in re.findall(r"[A-Za-z]{3,9}[ -/]?20\d{2}", text):
+    for token in re.findall(r"\w{3,12}[ -/]?20\d{2}", text):
         month = fuzzy_month(token)
         year_match = re.search(r"(20\d{2})", token)
         if month and year_match and _valid_bill_year(year_match.group(1)):
@@ -265,9 +214,14 @@ def infer_due_date(text: str) -> str | None:
     valid = []
     for date in candidates:
         day, month, year = map(int, re.split(r"[/-]", date))
-        if 1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= _MAX_VALID_YEAR:
-            valid.append(date)
-    return valid[0] if valid else None
+        if 1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= _MAX_VALID_YEAR + 5:
+            # Correct OCR year noise 
+            if year > _CURRENT_YEAR + 1:
+                year = _CURRENT_YEAR
+            valid.append(datetime(year, month, day))
+    if valid:
+        return max(valid).strftime("%d-%m-%Y")
+    return None
 
 
 def infer_bill_amount(text: str) -> float | None:
@@ -298,24 +252,31 @@ def infer_connected_load(text: str) -> float | None:
 
 
 def infer_tariff(text: str) -> str | None:
-    match = re.search(r"\b(?:LT|HT)[-\s]?[A-Z0-9]*\s*(?:Residential|Res|Commercial|Comm)?\b", text, flags=re.IGNORECASE)
+    match = re.search(r"\b(?:LT|HT|JiLt)[-\s\|]*[A-Z0-9]*\s*(?:Residential|Res|Ras|Commercial|Comm)?\b", text, flags=re.IGNORECASE)
     if not match:
         return None
-    value = clean_text(match.group(0).replace("Res", "Residential"))
+    value = clean_text(match.group(0).replace("Res", "Residential").replace("Ras", "Residential").replace("JiLt", "LT"))
     return value
 
 
 def infer_meter_number(text: str, consumer_number: str | None) -> str | None:
     """Meter numbers on MSEDCL bills are typically 8–11 digits and NOT phone-like."""
-    candidates = re.findall(r"\b\d{8,11}\b", text)
+    # Fix O vs 0 OCR issues for meter numbers starting with O
+    text_fixed = re.sub(r"\bO(\d{7,11})\b", r"0\1", text)
+    candidates = re.findall(r"\b\d{8,12}\b", text_fixed)
     filtered = [
         value for value in candidates
         if value != consumer_number
         and not reject_phone_like("meter_number", value)
-        # Exclude year-like 4-digit numbers that leaked through
         and not re.fullmatch(r"20\d{2}", value)
     ]
-    return filtered[0] if filtered else None
+    if filtered:
+        # Pick the longest starting with 0
+        zero_starts = [v for v in filtered if v.startswith("0")]
+        if zero_starts:
+            return max(zero_starts, key=len)
+        return filtered[0]
+    return None
 
 
 def infer_reading_triplet(text: str) -> tuple[int | None, int | None, int | None]:
@@ -440,6 +401,8 @@ def parse_bill_data(raw_text: str, region_texts: dict[str, str] | None = None) -
     if not results["customer_name"]["value"]:
         name = infer_customer_name(header_text or region_space["full_text"])
         if name:
+            name = clean_customer_name(name) or name
+        if name:
             name = sanitize_value("customer_name", name)
         if name:
             results["customer_name"] = {
@@ -527,7 +490,13 @@ def parse_bill_data(raw_text: str, region_texts: dict[str, str] | None = None) -
             }
 
     if not results["meter_number"]["value"]:
-        meter = infer_meter_number(region_space.get("meter_block", "") or region_space["full_text"], results["consumer_number"]["value"])
+        meter_text = "\n".join([
+            region_space.get("meter_block", ""),
+            region_space.get("usage_table", ""),
+            region_space.get("load_tariff", ""),
+            region_space.get("full_text", "")
+        ])
+        meter = infer_meter_number(meter_text, results["consumer_number"]["value"])
         if meter:
             meter = sanitize_value("meter_number", meter)
         if meter:

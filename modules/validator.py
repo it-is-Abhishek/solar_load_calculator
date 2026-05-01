@@ -95,6 +95,20 @@ def validate_fields(data: dict[str, Any]) -> dict[str, Any]:
         if len(digits) == 10 and digits.startswith(("7", "8", "9")):
             warnings.append(f"{field.replace('_', ' ').title()} looks like a phone number and should be reviewed.")
             field_flags.setdefault(field, []).append("Looks like a phone number")
+            
+    meter_number = normalized_data.get("meter_number")
+    if meter_number:
+        digits = "".join(char for char in str(meter_number) if char.isdigit())
+        if len(digits) not in [8, 9, 10, 11]:
+            warnings.append("Meter number length is suspicious.")
+            field_flags.setdefault("meter_number", []).append("Expected 8-11 digits")
+
+    consumer_number = normalized_data.get("consumer_number")
+    if consumer_number:
+        digits = "".join(char for char in str(consumer_number) if char.isdigit())
+        if len(digits) != 12:
+            warnings.append("Consumer number length is usually 12 digits for MSEDCL.")
+            field_flags.setdefault("consumer_number", []).append("Expected 12 digits")
 
     return {
         "is_valid": len(missing_fields) == 0,

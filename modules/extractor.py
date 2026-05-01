@@ -8,7 +8,7 @@ import pdfplumber
 import pytesseract
 from PIL import Image, ImageOps
 
-from modules.preprocess import build_region_payload
+# Note: region_detector.py was replaced by layout_analyzer.py
 
 try:
     import easyocr  # type: ignore
@@ -69,6 +69,11 @@ class BillExtractor:
 
         return self._ocr_image_regions(preview_image, method="pdf_ocr")
 
+    def _ocr_image_regions(self, image: Image.Image, method: str) -> dict[str, Any]:
+        temp_path = Path("/tmp/_msedcl_temp_preview.png")
+        image.save(temp_path)
+        return self.extract_text_from_image(temp_path)
+
     def render_pdf_first_page(self, file_path: Path) -> Image.Image | None:
         if fitz is None:
             return None
@@ -81,16 +86,41 @@ class BillExtractor:
 
     def extract_text_from_image(self, file_path: Path) -> dict[str, Any]:
         self.logger.info("Extracting text from image: %s", file_path.name)
-        payload = build_region_payload(file_path)
-        preview_image = payload["preview_image"]
-        region_images = payload["regions"]
-        return self._ocr_regions(region_images, preview_image=preview_image, method="image_ocr")
+        from modules.preprocess import read_image, enhance_document_image
+        raw_bgr = read_image(file_path)
+        enhanced = enhance_document_image(raw_bgr)
+        preview_image = Image.fromarray(enhanced)
 
-    def _ocr_image_regions(self, image: Image.Image, method: str) -> dict[str, Any]:
-        temp_path = Path("/tmp/_msedcl_temp_preview.png")
-        image.save(temp_path)
-        payload = build_region_payload(temp_path)
-        return self._ocr_regions(payload["regions"], preview_image=payload["preview_image"], method=method)
+        # 1. Fast Provider Detection via top 30% OCR
+        h = enhanced.shape[0]
+        header_crop = enhanced[0:int(h * 0.3), :]
+        header_image = Image.fromarray(header_crop)
+        header_text, _ = self._ocr_single_image(header_image)
+        
+        from modules.provider_detector import ProviderDetector
+        provider = ProviderDetector.detect(header_text)
+        self.logger.info("Detected Provider: %s", provider)
+
+        # 2. Layout Segmentation
+        from modules.layout_analyzer import segment_document
+        regions = segment_document(enhanced, provider)
+        region_images = {name: Image.fromarray(region) for name, region in regions.items()}
+        
+        result = self._ocr_regions(region_images, preview_image=preview_image, method="image_ocr")
+        result["provider"] = provider
+        return result
+
+    def _ocr_single_image(self, image: Image.Image) -> tuple[str, float]:
+        reader = self._get_easyocr_reader()
+        if reader is not None:
+            entries = reader.readtext(
+                self._image_to_array(self._prepare_variant(image)),
+                detail=1,
+                paragraph=False,
+            )
+            return self._entries_to_lines(entries)
+        else:
+            return self._tesseract_region(image)
 
     def _ocr_regions(
         self,
