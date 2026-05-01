@@ -1,0 +1,13 @@
+{
+  "customer_name": "B3",
+  "consumer_number": "B4",
+  "billing_month": "B5",
+  "bill_amount": "B6",
+  "units_consumed": "B7",
+  "connected_load_kw": "B8",
+  "tariff_category": "B9",
+  "meter_number": "B10",
+  "due_date": "B11",
+  "current_reading": "B12",
+  "previous_reading": "B13"
+}
