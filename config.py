@@ -59,3 +59,5 @@ DEFAULT_FIELD_MAPPING = {
     "current_reading": "B12",
     "previous_reading": "B13",
 }
+
+DEFAULT_SOLAR_COST_PER_KW = 55000

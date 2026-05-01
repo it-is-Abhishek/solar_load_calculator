@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from config import APP_NAME, COMPANY_NAME, FIELD_LABELS, SUPPORTED_FILE_TYPES
-from modules.excel_filler import fill_excel_template
+from modules.excel_filler import build_solar_summary, fill_excel_template, generate_csv_output
 from modules.extractor import BillExtractor
 from modules.parser import parse_bill_data
 from modules.utils import (
@@ -194,6 +194,8 @@ def initialize_session_state() -> None:
         "processed_records": [],
         "editable_data": {},
         "latest_output_path": None,
+        "latest_csv_output_path": None,
+        "latest_summary": None,
         "latest_preview_path": None,
         "latest_json": None,
     }
@@ -244,6 +246,54 @@ def render_header() -> None:
 
 def render_section_title(title: str) -> None:
     st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
+
+
+def format_metric_value(value: float | None, prefix: str = "", suffix: str = "", decimals: int = 2) -> str:
+    if value is None:
+        return "Not available"
+    formatted = f"{value:,.{decimals}f}"
+    if decimals == 0:
+        formatted = f"{value:,.0f}"
+    return f"{prefix}{formatted}{suffix}"
+
+
+def render_solar_report(summary: dict[str, float | None]) -> None:
+    render_section_title("Solar Recommendation Report")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+            "Suggested System Size",
+            format_metric_value(summary.get("suggested_system_size_kw"), suffix=" kW"),
+        )
+    with col2:
+        st.metric(
+            "Estimated Monthly Savings",
+            format_metric_value(summary.get("estimated_monthly_savings"), prefix="₹"),
+        )
+    with col3:
+        st.metric(
+            "Estimated Annual Savings",
+            format_metric_value(summary.get("estimated_annual_savings"), prefix="₹"),
+        )
+    with col4:
+        st.metric(
+            "Estimated ROI",
+            format_metric_value(summary.get("estimated_roi_years"), suffix=" years"),
+        )
+
+    detail_col_1, detail_col_2, detail_col_3 = st.columns(3)
+    with detail_col_1:
+        st.info(
+            f"Monthly solar offset: {format_metric_value(summary.get('estimated_monthly_solar_offset_units'), suffix=' units')}"
+        )
+    with detail_col_2:
+        st.info(
+            f"Estimated system cost: {format_metric_value(summary.get('estimated_system_cost'), prefix='₹')}"
+        )
+    with detail_col_3:
+        st.info(
+            f"Bill rate used: {format_metric_value(summary.get('bill_per_unit'), prefix='₹', suffix='/unit')}"
+        )
 
 
 def process_single_file(uploaded_file, extractor: BillExtractor) -> dict:
@@ -409,6 +459,8 @@ def main() -> None:
         st.session_state.processed_records = []
         st.session_state.editable_data = {}
         st.session_state.latest_output_path = None
+        st.session_state.latest_csv_output_path = None
+        st.session_state.latest_summary = None
         st.session_state.latest_preview_path = None
         st.session_state.latest_json = None
         st.rerun()
@@ -490,6 +542,10 @@ def main() -> None:
         final_data = normalize_editor_rows(edited_df)
         validation = validate_fields(final_data)
         final_data = validation["normalized_data"]
+        solar_summary = build_solar_summary(final_data)
+
+        if solar_summary.get("suggested_system_size_kw") is not None:
+            render_solar_report(solar_summary)
 
         with st.expander("Validation Summary", expanded=True):
             if validation["warnings"]:
@@ -524,7 +580,10 @@ def main() -> None:
             else:
                 try:
                     output_path = fill_excel_template(final_data, selected_name)
+                    csv_output_path = generate_csv_output(final_data, selected_name)
                     st.session_state.latest_output_path = str(output_path)
+                    st.session_state.latest_csv_output_path = str(csv_output_path)
+                    st.session_state.latest_summary = solar_summary
                     st.session_state.latest_json = final_data
                     active_record["status"] = "excel_generated"
                     append_history(
@@ -535,13 +594,19 @@ def main() -> None:
                             "consumer_number": final_data.get("consumer_number"),
                             "status": "excel_generated",
                             "output_path": str(output_path),
+                            "csv_output_path": str(csv_output_path),
                         }
                     )
-                    logger.info("Generated Excel output for %s at %s", selected_name, output_path.name)
-                    st.success("Excel file generated successfully.")
+                    logger.info(
+                        "Generated Excel and CSV outputs for %s at %s and %s",
+                        selected_name,
+                        output_path.name,
+                        csv_output_path.name,
+                    )
+                    st.success("Excel and CSV files generated successfully.")
                 except Exception as exc:  # pragma: no cover
                     logger.exception("Excel generation failed for %s", selected_name)
-                    st.error(f"Excel generation failed: {exc}")
+                    st.error(f"File generation failed: {exc}")
 
         if st.session_state.latest_output_path and Path(st.session_state.latest_output_path).exists():
             with open(st.session_state.latest_output_path, "rb") as output_file:
@@ -550,6 +615,16 @@ def main() -> None:
                     data=output_file.read(),
                     file_name=Path(st.session_state.latest_output_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
+
+        if st.session_state.latest_csv_output_path and Path(st.session_state.latest_csv_output_path).exists():
+            with open(st.session_state.latest_csv_output_path, "rb") as output_file:
+                st.download_button(
+                    "Download Completed CSV",
+                    data=output_file.read(),
+                    file_name=Path(st.session_state.latest_csv_output_path).name,
+                    mime="text/csv",
                     width="stretch",
                 )
 
