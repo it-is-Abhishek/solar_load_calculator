@@ -308,6 +308,7 @@ def process_single_file(uploaded_file, extractor: BillExtractor) -> dict:
     return build_processed_record(
         file_name=uploaded_file.name,
         raw_text=extraction_result.get("text", ""),
+        region_texts=extraction_result.get("region_texts", {}),
         extraction_method=extraction_result.get("method", "unknown"),
         ocr_engine=extraction_result.get("engine", "n/a"),
         ocr_confidence=extraction_result.get("ocr_confidence", 0.0),
@@ -319,13 +320,14 @@ def process_single_file(uploaded_file, extractor: BillExtractor) -> dict:
 def build_processed_record(
     file_name: str,
     raw_text: str,
+    region_texts: dict[str, str],
     extraction_method: str,
     ocr_engine: str,
     ocr_confidence: float,
     saved_path: str | None = None,
     preview_path: str | None = None,
 ) -> dict:
-    parsed = parse_bill_data(raw_text)
+    parsed = parse_bill_data(raw_text, region_texts=region_texts)
     flattened = {field: info.get("value") for field, info in parsed.items()}
     confidence_map = {field: info.get("confidence", 0.0) for field, info in parsed.items()}
     source_map = {field: info.get("source", "unknown") for field, info in parsed.items()}
@@ -337,6 +339,7 @@ def build_processed_record(
         "saved_path": saved_path,
         "preview_path": preview_path,
         "raw_text": raw_text,
+        "region_texts": region_texts,
         "extracted_data": flattened,
         "confidence_map": confidence_map,
         "source_map": source_map,
@@ -358,6 +361,7 @@ def process_pasted_text(raw_text: str) -> dict:
     return build_processed_record(
         file_name="pasted_bill_text.txt",
         raw_text=raw_text,
+        region_texts={},
         extraction_method="pasted_text",
         ocr_engine="n/a",
         ocr_confidence=1.0,
@@ -371,6 +375,7 @@ def build_editable_table(record: dict) -> pd.DataFrame:
     extracted_data = record["extracted_data"]
     confidence_map = record["confidence_map"]
     source_map = record.get("source_map", {})
+    field_flags = record.get("validation", {}).get("field_flags", {})
     for field, label in FIELD_LABELS.items():
         rows.append(
             {
@@ -379,6 +384,7 @@ def build_editable_table(record: dict) -> pd.DataFrame:
                 "Value": "" if extracted_data.get(field) is None else str(extracted_data.get(field)),
                 "Confidence": round(float(confidence_map.get(field, 0.0)) * 100, 1),
                 "Source": source_map.get(field, "unknown"),
+                "Status": "Review" if field_flags.get(field) else "OK",
             }
         )
     return pd.DataFrame(rows)
@@ -521,7 +527,7 @@ def main() -> None:
                 editable_df,
                 hide_index=True,
                 width="stretch",
-                disabled=["field_key", "Field", "Confidence", "Source"],
+                disabled=["field_key", "Field", "Confidence", "Source", "Status"],
                 key=f"editor_{selected_name}",
             )
 
@@ -553,6 +559,22 @@ def main() -> None:
                     st.warning(warning)
             else:
                 st.success("All key validations passed.")
+
+        flagged_fields = {
+            field: notes
+            for field, notes in validation.get("field_flags", {}).items()
+            if notes
+        }
+        if flagged_fields:
+            with st.expander("Suspicious Fields", expanded=False):
+                flag_rows = [
+                    {
+                        "Field": FIELD_LABELS.get(field, field),
+                        "Issue": "; ".join(notes),
+                    }
+                    for field, notes in flagged_fields.items()
+                ]
+                st.dataframe(pd.DataFrame(flag_rows), width="stretch", hide_index=True)
 
         action_col_1, action_col_2, action_col_3 = st.columns([1, 1, 1])
         with action_col_1:
@@ -642,10 +664,19 @@ def main() -> None:
                         "Value": "" if info.get("value") is None else str(info.get("value")),
                         "Confidence %": round(float(info.get("confidence", 0.0)) * 100, 1),
                         "Source": info.get("source"),
+                        "Region": info.get("region"),
                         "Pattern": "" if info.get("matched_pattern") is None else str(info.get("matched_pattern")),
                     }
                 )
             st.dataframe(pd.DataFrame(diagnostics), width="stretch", hide_index=True)
+
+        region_texts = active_record.get("region_texts", {})
+        if region_texts:
+            with st.expander("Region OCR Output"):
+                for region_name, region_text in region_texts.items():
+                    if region_text.strip():
+                        st.markdown(f"**{region_name.replace('_', ' ').title()}**")
+                        st.code(region_text, language="text")
 
         with st.expander("Raw OCR / Extracted Text"):
             st.text_area(

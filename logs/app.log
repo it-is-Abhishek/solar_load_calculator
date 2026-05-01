@@ -72,3 +72,10 @@
 2026-05-01 11:26:16,320 | INFO | solar_load_calculator | Using EasyOCR engine
 2026-05-01 11:26:23,980 | INFO | solar_load_calculator | Processed file Copy of WhatsApp Image 2026-02-12 at 13.48.47 (1).jpeg with method image_ocr
 2026-05-01 11:26:23,980 | INFO | solar_load_calculator | Processed file Copy of WhatsApp Image 2026-02-12 at 13.48.47 (1).jpeg with method image_ocr
+2026-05-01 12:15:29,841 | INFO | solar_load_calculator | Extracting text from image: 20260501_102815_339431_Copy_of_WhatsApp_Image_2026-02-12_at_13.48.47_(1).jpeg
+2026-05-01 12:16:54,388 | INFO | solar_load_calculator | Extracting text from image: 20260501_102815_339431_Copy_of_WhatsApp_Image_2026-02-12_at_13.48.47_(1).jpeg
+2026-05-01 12:18:15,915 | INFO | solar_load_calculator | Extracting text from image: 20260501_102815_339431_Copy_of_WhatsApp_Image_2026-02-12_at_13.48.47_(1).jpeg
+2026-05-01 12:18:47,304 | INFO | solar_load_calculator | Extracting text from image: 20260501_121847_303546_Copy_of_WhatsApp_Image_2026-02-12_at_13.48.47_(1).jpeg
+2026-05-01 12:18:47,304 | INFO | solar_load_calculator | Extracting text from image: 20260501_121847_303546_Copy_of_WhatsApp_Image_2026-02-12_at_13.48.47_(1).jpeg
+2026-05-01 12:19:24,948 | INFO | solar_load_calculator | Processed file Copy of WhatsApp Image 2026-02-12 at 13.48.47 (1).jpeg with method image_ocr
+2026-05-01 12:19:24,948 | INFO | solar_load_calculator | Processed file Copy of WhatsApp Image 2026-02-12 at 13.48.47 (1).jpeg with method image_ocr

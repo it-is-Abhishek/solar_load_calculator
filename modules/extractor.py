@@ -6,10 +6,9 @@ from typing import Any
 
 import pdfplumber
 import pytesseract
-from PIL import Image
-from PIL import ImageOps
+from PIL import Image, ImageOps
 
-from modules.preprocess import preprocess_image_for_ocr
+from modules.preprocess import build_region_payload
 
 try:
     import easyocr  # type: ignore
@@ -43,24 +42,29 @@ class BillExtractor:
                 if page_text.strip():
                     text_chunks.append(page_text)
 
-        method = "pdf_text"
+        preview_image = self.render_pdf_first_page(file_path)
         if text_chunks:
             return {
                 "text": "\n".join(text_chunks),
+                "region_texts": {},
                 "ocr_confidence": 1.0,
-                "method": method,
-                "preview_image": self.render_pdf_first_page(file_path),
+                "method": "pdf_text",
+                "preview_image": preview_image,
+                "engine": "embedded_pdf_text",
             }
 
-        self.logger.info("No embedded PDF text found, switching to OCR for %s", file_path.name)
-        image = self.render_pdf_first_page(file_path)
-        if image is None:
-            return {"text": "", "ocr_confidence": 0.0, "method": "pdf_ocr", "preview_image": None}
+        self.logger.info("No embedded PDF text found, switching to region OCR for %s", file_path.name)
+        if preview_image is None:
+            return {
+                "text": "",
+                "region_texts": {},
+                "ocr_confidence": 0.0,
+                "method": "pdf_ocr",
+                "preview_image": None,
+                "engine": "n/a",
+            }
 
-        ocr_result = self._ocr_image(image)
-        ocr_result["method"] = "pdf_ocr"
-        ocr_result["preview_image"] = image
-        return ocr_result
+        return self._ocr_image_regions(preview_image, method="pdf_ocr")
 
     def render_pdf_first_page(self, file_path: Path) -> Image.Image | None:
         if fitz is None:
@@ -74,56 +78,92 @@ class BillExtractor:
 
     def extract_text_from_image(self, file_path: Path) -> dict[str, Any]:
         self.logger.info("Extracting text from image: %s", file_path.name)
-        preprocessed_image = preprocess_image_for_ocr(file_path)
-        result = self._ocr_image(preprocessed_image)
-        result["preview_image"] = preprocessed_image
-        result["method"] = "image_ocr"
-        return result
+        payload = build_region_payload(file_path)
+        preview_image = payload["preview_image"]
+        region_images = payload["regions"]
+        return self._ocr_regions(region_images, preview_image=preview_image, method="image_ocr")
 
-    def _ocr_image(self, image: Image.Image) -> dict[str, Any]:
+    def _ocr_image_regions(self, image: Image.Image, method: str) -> dict[str, Any]:
+        temp_path = Path("/tmp/_msedcl_temp_preview.png")
+        image.save(temp_path)
+        payload = build_region_payload(temp_path)
+        return self._ocr_regions(payload["regions"], preview_image=payload["preview_image"], method=method)
+
+    def _ocr_regions(
+        self,
+        region_images: dict[str, Image.Image],
+        preview_image: Image.Image,
+        method: str,
+    ) -> dict[str, Any]:
+        region_texts: dict[str, str] = {}
+        region_confidences: list[float] = []
         reader = self._get_easyocr_reader()
-        if reader is not None:
-            self.logger.info("Using EasyOCR engine")
-            variants = self._build_easyocr_variants(image)
-            primary_entries = reader.readtext(
-                self._image_to_array(variants[0]),
-                detail=1,
-                paragraph=False,
-            )
-            ocr_entries = primary_entries
-            if len(primary_entries) < 35 and len(variants) > 1:
-                secondary_entries = reader.readtext(
-                    self._image_to_array(variants[1]),
+
+        for region_name, region_image in region_images.items():
+            if reader is not None:
+                entries = reader.readtext(
+                    self._image_to_array(self._prepare_variant(region_image)),
                     detail=1,
                     paragraph=False,
                 )
-                if len(secondary_entries) > len(ocr_entries):
-                    ocr_entries = secondary_entries
+                text, confidence = self._entries_to_lines(entries)
+                region_texts[region_name] = text
+                if confidence > 0:
+                    region_confidences.append(confidence)
+            else:
+                text, confidence = self._tesseract_region(region_image)
+                region_texts[region_name] = text
+                if confidence > 0:
+                    region_confidences.append(confidence)
 
-            text = self._entries_to_lines(ocr_entries)
-            confidences = [float(entry[2]) for entry in ocr_entries if len(entry) > 2]
-            confidence = sum(confidences) / len(confidences) if confidences else 0.0
-            return {"text": text, "ocr_confidence": round(confidence, 3), "engine": "easyocr"}
+        ordered_sections = [
+            "header_left",
+            "consumer_block",
+            "header_right",
+            "load_tariff",
+            "meter_block",
+            "usage_table",
+            "readings_block",
+        ]
+        merged_text = "\n".join(
+            region_texts.get(section, "")
+            for section in ordered_sections
+            if region_texts.get(section, "").strip()
+        )
+        average_confidence = (
+            round(sum(region_confidences) / len(region_confidences), 3)
+            if region_confidences
+            else 0.0
+        )
+        return {
+            "text": merged_text,
+            "region_texts": region_texts,
+            "ocr_confidence": average_confidence,
+            "method": method,
+            "preview_image": preview_image,
+            "engine": "easyocr" if reader is not None else "tesseract",
+        }
 
-        self.logger.info("Using Tesseract OCR engine")
+    def _tesseract_region(self, region_image: Image.Image) -> tuple[str, float]:
         ocr_data = pytesseract.image_to_data(
-            image,
+            region_image,
             output_type=pytesseract.Output.DICT,
             config="--oem 3 --psm 6",
         )
-        words = [word for word in ocr_data["text"] if word.strip()]
-        text = " ".join(words)
+        words = [word.strip() for word in ocr_data["text"] if word.strip()]
         confidences = [
             float(conf)
             for conf in ocr_data["conf"]
-            if isinstance(conf, (int, float, str)) and str(conf).strip() not in {"-1", ""}
+            if str(conf).strip() not in {"-1", ""}
         ]
-        confidence = (
-            sum(confidences) / (len(confidences) * 100)
-            if confidences
-            else 0.0
-        )
-        return {"text": text, "ocr_confidence": round(confidence, 3), "engine": "tesseract"}
+        confidence = sum(confidences) / (len(confidences) * 100) if confidences else 0.0
+        return " ".join(words), round(confidence, 3)
+
+    @staticmethod
+    def _prepare_variant(image: Image.Image) -> Image.Image:
+        gray = ImageOps.grayscale(image)
+        gray = ImageOps.autocontrast(gray)
+        return gray.resize((gray.width * 2, gray.height * 2))
 
     @staticmethod
     def _image_to_array(image: Image.Image):
@@ -132,39 +172,22 @@ class BillExtractor:
         return np.array(image)
 
     @staticmethod
-    def _build_easyocr_variants(image: Image.Image) -> list[Image.Image]:
-        rgb = image.convert("RGB")
-        gray = ImageOps.grayscale(rgb)
-        gray = ImageOps.autocontrast(gray)
-        variants = [
-            rgb,
-            gray.resize((gray.width * 2, gray.height * 2)),
-        ]
-        deduped: list[Image.Image] = []
-        seen_sizes: set[tuple[int, int, str]] = set()
-        for variant in variants:
-            mode_key = f"{variant.mode}"
-            key = (variant.width, variant.height, mode_key)
-            if key not in seen_sizes:
-                seen_sizes.add(key)
-                deduped.append(variant)
-        return deduped
-
-    @staticmethod
-    def _entries_to_lines(entries: list[tuple[Any, str, float]]) -> str:
+    def _entries_to_lines(entries: list[tuple[Any, str, float]]) -> tuple[str, float]:
         if not entries:
-            return ""
+            return "", 0.0
 
         normalized = []
+        confidences = []
         for box, text, conf in entries:
-            if not text or not str(text).strip():
+            clean_text = str(text).strip()
+            if not clean_text:
                 continue
             xs = [point[0] for point in box]
             ys = [point[1] for point in box]
+            confidences.append(float(conf))
             normalized.append(
                 {
-                    "text": str(text).strip(),
-                    "conf": float(conf),
+                    "text": clean_text,
                     "x": min(xs),
                     "y": min(ys),
                     "h": max(ys) - min(ys),
@@ -188,9 +211,10 @@ class BillExtractor:
         text_lines = []
         for line in lines:
             line.sort(key=lambda item: item["x"])
-            merged = " ".join(item["text"] for item in line)
-            text_lines.append(merged)
-        return "\n".join(text_lines)
+            text_lines.append(" ".join(item["text"] for item in line))
+
+        confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        return "\n".join(text_lines), round(confidence, 3)
 
     def process_file(self, file_path: Path) -> dict[str, Any]:
         suffix = file_path.suffix.lower()

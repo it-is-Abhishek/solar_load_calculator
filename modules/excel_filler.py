@@ -79,14 +79,13 @@ def build_solar_summary(extracted_data: dict[str, Any]) -> dict[str, float | Non
 
     estimated_monthly_solar_offset_units = round(units * 0.75, 2) if units is not None else None
     suggested_system_size_kw = None
-    if estimated_monthly_solar_offset_units is not None:
-        derived_size = estimated_monthly_solar_offset_units / 120
-        if load_kw is not None:
-            suggested_system_size_kw = round(max(load_kw, derived_size), 2)
-        else:
-            suggested_system_size_kw = round(derived_size, 2)
+    if units is not None:
+        derived_size = units / 135
+        suggested_system_size_kw = round(max(0.5, derived_size), 2)
+        if load_kw is not None and load_kw >= 0.5:
+            suggested_system_size_kw = round(min(suggested_system_size_kw, max(load_kw, 0.5)), 2)
     elif load_kw is not None:
-        suggested_system_size_kw = round(load_kw, 2)
+        suggested_system_size_kw = round(max(0.5, min(load_kw, 5.0)), 2)
 
     estimated_monthly_savings = None
     if estimated_monthly_solar_offset_units is not None and bill_per_unit is not None:
