@@ -61,7 +61,7 @@ def validate_fields(data: dict[str, Any]) -> dict[str, Any]:
         field_flags.setdefault("units_consumed", []).append("Outside expected monthly range")
 
     bill_amount = _to_float(normalized_data.get("bill_amount"))
-    if bill_amount is not None and not (100 <= bill_amount <= 50000):
+    if bill_amount is not None and not (150 <= bill_amount <= 50000):
         warnings.append("Bill amount looks suspicious.")
         field_flags.setdefault("bill_amount", []).append("Outside expected bill amount range")
 

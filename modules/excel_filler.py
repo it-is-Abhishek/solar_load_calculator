@@ -78,14 +78,17 @@ def build_solar_summary(extracted_data: dict[str, Any]) -> dict[str, float | Non
         bill_per_unit = round(bill_amount / units, 2)
 
     estimated_monthly_solar_offset_units = round(units * 0.75, 2) if units is not None else None
+
+    # System size: 1 kW ≈ 130 units/month (mid-range of 120–150)
+    # Primary driver is consumption; connected load is only a sanity cross-check,
+    # NOT a cap — a 1 kW connected load can still justify a 1 kW solar system.
     suggested_system_size_kw = None
     if units is not None:
-        derived_size = units / 135
+        derived_size = round(units / 130, 2)
         suggested_system_size_kw = round(max(0.5, derived_size), 2)
-        if load_kw is not None and load_kw >= 0.5:
-            suggested_system_size_kw = round(min(suggested_system_size_kw, max(load_kw, 0.5)), 2)
-    elif load_kw is not None:
-        suggested_system_size_kw = round(max(0.5, min(load_kw, 5.0)), 2)
+    elif load_kw is not None and 0.5 <= load_kw <= 5.0:
+        # Only fall back to load_kw when units are completely unavailable
+        suggested_system_size_kw = round(load_kw, 2)
 
     estimated_monthly_savings = None
     if estimated_monthly_solar_offset_units is not None and bill_per_unit is not None:

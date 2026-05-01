@@ -87,6 +87,10 @@ MONTH_MAP = {
 
 PHONE_BLACKLIST = {"7798577985", "77985", "9112233120"}
 
+# Year tokens that are clearly OCR noise (e.g. MAR-3444, year 2028+)
+_CURRENT_YEAR = datetime.now().year
+_MAX_VALID_YEAR = _CURRENT_YEAR + 1  # bills can't be dated more than 1 year ahead
+
 
 def normalize_whitespace(text: str) -> str:
     text = text.replace("\x0c", " ")
@@ -160,7 +164,7 @@ def fuzzy_month(token: str) -> str | None:
         if score > best_score:
             best_key = key
             best_score = score
-    return MONTH_MAP[best_key] if best_key and best_score >= 0.55 else None
+    return MONTH_MAP[best_key] if best_key and best_score >= 0.75 else None
 
 
 def build_search_space(raw_text: str, region_texts: dict[str, str] | None = None) -> dict[str, str]:
@@ -223,24 +227,35 @@ def infer_consumer_number(text: str) -> str | None:
     return numbers[0] if numbers else None
 
 
+def _valid_bill_year(year_str: str) -> bool:
+    """Accept only realistic billing years (2018–current+1)."""
+    try:
+        year = int(year_str)
+        return 2018 <= year <= _MAX_VALID_YEAR
+    except ValueError:
+        return False
+
+
 def infer_billing_month(text: str) -> str | None:
-    for token in re.findall(r"\b[A-Za-z0-9]{3,12}[-/ ]20\d{2}\b", text):
+    # Pattern: MON-YYYY or MON/YYYY where year is realistic
+    for token in re.findall(r"\b[A-Za-z]{3,9}[-/ ]20\d{2}\b", text):
         year_match = re.search(r"(20\d{2})", token)
         month = fuzzy_month(token)
-        if month and year_match:
+        if month and year_match and _valid_bill_year(year_match.group(1)):
             return f"{month}-{year_match.group(1)}"
 
     month_of_match = re.search(r"month\s*of\s*([A-Za-z]{3,12})", text, flags=re.IGNORECASE)
-    year_match = re.search(r"(20\d{2})", text)
-    if month_of_match and year_match:
+    # Find the FIRST plausible year in text (not a random 4-digit number)
+    year_candidates = [y for y in re.findall(r"\b(20\d{2})\b", text) if _valid_bill_year(y)]
+    if month_of_match and year_candidates:
         month = fuzzy_month(month_of_match.group(1))
         if month:
-            return f"{month}-{year_match.group(1)}"
+            return f"{month}-{year_candidates[0]}"
 
-    for token in re.findall(r"[A-Za-z]{3,12}[ -/]?\d{4}", text):
+    for token in re.findall(r"[A-Za-z]{3,9}[ -/]?20\d{2}", text):
         month = fuzzy_month(token)
         year_match = re.search(r"(20\d{2})", token)
-        if month and year_match:
+        if month and year_match and _valid_bill_year(year_match.group(1)):
             return f"{month}-{year_match.group(1)}"
     return None
 
@@ -250,28 +265,35 @@ def infer_due_date(text: str) -> str | None:
     valid = []
     for date in candidates:
         day, month, year = map(int, re.split(r"[/-]", date))
-        if 1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= 2035:
+        if 1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= _MAX_VALID_YEAR:
             valid.append(date)
     return valid[0] if valid else None
 
 
 def infer_bill_amount(text: str) -> float | None:
+    """Pick the LARGEST plausible amount — the total payable is usually the biggest figure."""
     amounts = []
     for token in re.findall(r"\b\d{3,6}[.,]\d{2}\b", text):
         normalized = token.replace(",", ".") if token.count(",") == 1 and "." not in token else token
         value = clean_currency(normalized)
-        if value and 100 <= value <= 50000:
+        if value and 150 <= value <= 50000:
             amounts.append(value)
-    return amounts[0] if amounts else None
+    # Return the largest candidate — total bill is always >= sub-charges
+    return max(amounts) if amounts else None
 
 
 def infer_connected_load(text: str) -> float | None:
+    """Extract connected load; strictly enforce residential range 0.5–5 kW."""
     compact = re.sub(r"(?<=\d)\s+(?=\d)", ".", text)
-    kw_match = re.search(r"\b(\d(?:\.\d{1,2})?)\s*kw\b", compact, flags=re.IGNORECASE)
-    if kw_match:
-        value = clean_number(kw_match.group(1))
-        if isinstance(value, (int, float)) and 0.5 <= float(value) <= 5:
-            return float(value)
+    # Match patterns like '1.00 kW', '2 kW', '1.5kW'
+    for pattern in [
+        r"\b(\d{1,2}(?:\.\d{1,2})?)\s*kw\b",
+        r"\b(\d{1,2}(?:\.\d{1,2})?)\s*kva\b",
+    ]:
+        for match in re.finditer(pattern, compact, flags=re.IGNORECASE):
+            value = clean_number(match.group(1))
+            if isinstance(value, (int, float)) and 0.5 <= float(value) <= 5.0:
+                return float(value)
     return None
 
 
@@ -284,38 +306,58 @@ def infer_tariff(text: str) -> str | None:
 
 
 def infer_meter_number(text: str, consumer_number: str | None) -> str | None:
-    candidates = re.findall(r"\b\d{8,12}\b", text)
-    filtered = [value for value in candidates if value != consumer_number and not reject_phone_like("meter_number", value)]
+    """Meter numbers on MSEDCL bills are typically 8–11 digits and NOT phone-like."""
+    candidates = re.findall(r"\b\d{8,11}\b", text)
+    filtered = [
+        value for value in candidates
+        if value != consumer_number
+        and not reject_phone_like("meter_number", value)
+        # Exclude year-like 4-digit numbers that leaked through
+        and not re.fullmatch(r"20\d{2}", value)
+    ]
     return filtered[0] if filtered else None
 
 
 def infer_reading_triplet(text: str) -> tuple[int | None, int | None, int | None]:
+    """
+    Extract (previous_reading, current_reading, units_consumed) from the readings block.
+
+    Strategy:
+    1. Look for a line with 3+ numbers where two are meter readings (1000–99999)
+       and their difference equals the third (units consumed, 1–2500).
+    2. Fall back to finding the two largest meter-range numbers and computing diff.
+    3. Never use phone-like numbers or year-like tokens as readings.
+    """
+    def _is_reading(n: int) -> bool:
+        return 1000 <= n <= 99999 and not (2018 <= n <= _MAX_VALID_YEAR + 5)
+
+    def _is_units(n: int) -> bool:
+        return 1 <= n <= 2500 and not reject_phone_like("units_consumed", str(n))
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     for line in lines:
-        numbers = [int(token.replace(",", "")) for token in re.findall(r"\b\d{2,6}\b", line)]
-        plausible = [value for value in numbers if value < 100000]
-        if len(plausible) >= 3:
-            high = sorted(plausible)[-3:]
-            prev, curr = sorted(high[:2])
-            units = high[2] - curr if high[2] > curr else None
-            if curr > prev:
-                diff = curr - prev
-                if 1 <= diff <= 2500:
-                    return prev, curr, diff
+        raw_numbers = [int(t.replace(",", "")) for t in re.findall(r"\b\d{2,6}\b", line)]
+        readings = [n for n in raw_numbers if _is_reading(n)]
+        if len(readings) >= 2:
+            readings_sorted = sorted(set(readings))
+            prev, curr = readings_sorted[-2], readings_sorted[-1]
+            diff = curr - prev
+            if _is_units(diff):
+                return prev, curr, diff
 
-    numbers = [int(token) for token in re.findall(r"\b\d{2,6}\b", text)]
-    reading_candidates = [value for value in numbers if 1000 <= value <= 99999 and not (2020 <= value <= 2035)]
-    current = max(reading_candidates) if reading_candidates else None
-    previous = None
-    if current is not None:
-        lower = [value for value in reading_candidates if value < current]
-        previous = max(lower) if lower else None
-    units = current - previous if current and previous and 1 <= current - previous <= 2500 else None
+    # Fallback: scan full text for meter-range numbers
+    all_numbers = [int(t) for t in re.findall(r"\b\d{2,6}\b", text)]
+    reading_candidates = sorted(set(n for n in all_numbers if _is_reading(n)))
+    if len(reading_candidates) >= 2:
+        prev, curr = reading_candidates[-2], reading_candidates[-1]
+        diff = curr - prev
+        if _is_units(diff):
+            return prev, curr, diff
 
-    plausible_units = [value for value in numbers if 10 <= value <= 2500 and not reject_phone_like("units_consumed", value)]
-    if units is None and plausible_units:
-        units = max(plausible_units)
-    return previous, current, units
+    # Last resort: find units-range number explicitly labelled or standalone
+    unit_candidates = [n for n in all_numbers if _is_units(n)]
+    units = max(unit_candidates) if unit_candidates else None
+    return None, None, units
 
 
 def extract_field(field: str, search_space: dict[str, str]) -> dict[str, Any]:
@@ -349,20 +391,30 @@ def sanitize_value(field: str, value: Any) -> Any:
         return None
 
     if field == "bill_amount":
-        return value if isinstance(value, (int, float)) and 100 <= float(value) <= 50000 else None
+        return value if isinstance(value, (int, float)) and 150 <= float(value) <= 50000 else None
+    if field == "billing_month":
+        # Must be MON-YYYY with a realistic year; reject garbage like 'test' or 'MAR-3444'
+        if not isinstance(value, str):
+            return None
+        m = re.fullmatch(r"([A-Za-z]{3})[\- /](20\d{2})", value.strip())
+        if not m or not _valid_bill_year(m.group(2)):
+            return None
+        return value
     if field == "units_consumed":
         return value if isinstance(value, (int, float)) and 10 <= float(value) <= 2500 else None
     if field == "connected_load_kw":
-        return value if isinstance(value, (int, float)) and 0.5 <= float(value) <= 5 else None
+        # Strictly residential: 0.5–5 kW; reject ad/OCR noise like 10 kW
+        return value if isinstance(value, (int, float)) and 0.5 <= float(value) <= 5.0 else None
     if field in {"current_reading", "previous_reading"}:
-        return value if isinstance(value, (int, float)) and 1000 <= float(value) <= 99999 else None
+        v = float(value)
+        # Must be a plausible meter reading and not a year token
+        return value if isinstance(value, (int, float)) and 1000 <= v <= 99999 and not (2018 <= v <= _MAX_VALID_YEAR + 5) else None
     if field == "due_date" and isinstance(value, str):
         match = re.fullmatch(r"(\d{2})[/-](\d{2})[/-](\d{4})", value)
         if not match:
             return None
         day, month, year = map(int, match.groups())
-        current_year = datetime.now().year
-        if not (1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= current_year + 1):
+        if not (1 <= day <= 31 and 1 <= month <= 12 and 2020 <= year <= _MAX_VALID_YEAR):
             return None
         return value
     if field in {"consumer_number", "meter_number"} and reject_phone_like(field, value):

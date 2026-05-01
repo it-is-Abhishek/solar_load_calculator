@@ -60,7 +60,8 @@ def deskew_binary_image(image: np.ndarray) -> np.ndarray:
 
 def crop_msedcl_regions(image: np.ndarray) -> dict[str, np.ndarray]:
     height, width = image.shape[:2]
-    top_cutoff = int(height * 0.72)
+    # Hard-cut bottom 35% — ads, QR codes, solar banners, payment footers live there
+    top_cutoff = int(height * 0.65)
     working = image[:top_cutoff, :]
 
     wh = working.shape[0]
@@ -68,13 +69,20 @@ def crop_msedcl_regions(image: np.ndarray) -> dict[str, np.ndarray]:
 
     regions = {
         "full_clean": working,
-        "header_left": working[0:int(wh * 0.22), 0:int(ww * 0.62)],
-        "consumer_block": working[int(wh * 0.07):int(wh * 0.26), int(ww * 0.02):int(ww * 0.62)],
-        "header_right": working[0:int(wh * 0.25), int(ww * 0.56):ww],
-        "usage_table": working[int(wh * 0.24):int(wh * 0.60), int(ww * 0.02):int(ww * 0.98)],
-        "load_tariff": working[int(wh * 0.24):int(wh * 0.42), int(ww * 0.02):int(ww * 0.70)],
-        "meter_block": working[int(wh * 0.28):int(wh * 0.55), int(ww * 0.28):int(ww * 0.84)],
-        "readings_block": working[int(wh * 0.30):int(wh * 0.68), int(ww * 0.02):int(ww * 0.98)],
+        # Customer name, billing month — top-left block
+        "header_left": working[0:int(wh * 0.20), 0:int(ww * 0.60)],
+        # Consumer number, name continuation
+        "consumer_block": working[int(wh * 0.06):int(wh * 0.24), int(ww * 0.02):int(ww * 0.60)],
+        # Bill amount, due date — top-right
+        "header_right": working[0:int(wh * 0.24), int(ww * 0.58):ww],
+        # Middle table: readings, units, charges
+        "usage_table": working[int(wh * 0.22):int(wh * 0.58), int(ww * 0.02):int(ww * 0.98)],
+        # Connected load and tariff — left-middle
+        "load_tariff": working[int(wh * 0.22):int(wh * 0.40), int(ww * 0.02):int(ww * 0.65)],
+        # Meter number — centre strip
+        "meter_block": working[int(wh * 0.26):int(wh * 0.52), int(ww * 0.25):int(ww * 0.80)],
+        # Previous/current readings and units consumed
+        "readings_block": working[int(wh * 0.28):int(wh * 0.65), int(ww * 0.02):int(ww * 0.98)],
     }
     return regions
 

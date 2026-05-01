@@ -38,7 +38,10 @@ class BillExtractor:
         text_chunks: list[str] = []
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text() or ""
+                # Crop bottom 35% before extracting embedded text to mirror image region logic
+                h = page.height
+                cropped = page.within_bbox((0, 0, page.width, h * 0.65))
+                page_text = cropped.extract_text() or ""
                 if page_text.strip():
                     text_chunks.append(page_text)
 
